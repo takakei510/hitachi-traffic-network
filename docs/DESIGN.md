@@ -10,41 +10,53 @@
 - 読み込みは `src/hitachi_network/io.py` が担当する。
 - 可視化は `src/hitachi_network/plotting.py` が担当する。
 - カスケード制御は `src/hitachi_network/cascade.py` が担当し、負荷の計算は外部から差し込む。
-- 交通網向けの分析ロジックは `src/hitachi_network/simulation.py` にまとめる。
+- 交通網向けの分析ロジック、複数試行の集計、出力整形は `src/hitachi_network/simulation.py` にまとめる。
 
 ## 現在のデータモデル
 
 - ノードは `osmid` を識別子として扱う。
 - エッジは `u`, `v`, `key`, `length` を中心に扱う。
 - 多重辺は解析前に単純化し、同一端点間では最短の `length` を持つ辺を採用する。
+- 自己ループは解析から除外する。
 
 ## カスケード計算
 
 - 初期負荷はノード負荷モデルで計算する。
 - 負荷モデルは現在 `betweenness` と `degree` を用意している。
-- 容量は `initial_load * (1 + tolerance)` とする。
+- 容量は `C_i = (1 + alpha) * L_i(0)` とする。
 - 初期攻撃ノードを除去したあと、各ステップで再計算した負荷が容量を超えたノードを同時に削除する。
 - 収束するまで繰り返し、ステップごとの失敗履歴を保持する。
+- 各ステップは `remaining_nodes` と `largest_component_size` を両方記録する。
 
 ## 比較シナリオ
 
-- ランダム故障: ノード集合から乱択で選ぶ。
-- 高負荷ノード故障: 初期負荷が高い順に選ぶ。
-- 両シナリオは同じグラフ、同じ負荷モデル、同じ容量条件で比較する。
+- ランダム故障: ノード集合から乱択で選ぶ。複数回試行し、平均と標準偏差を集計する。
+- 高負荷ノード故障: 初期負荷が高い順に選ぶ。1 回だけ実行する。
+- 両シナリオは同じグラフ、同じ負荷モデル、同じ `alpha`、同じ `attack_count`、同じ `sample_size`、同じ `seed` を使う。
+- ランダム故障の乱数は試行番号ごとに再現可能な形で分ける。
 
 ## 出力
 
-- CSV: 要約とステップ推移を分けて保存する。
-- JSON: シナリオ全体の構造化結果を保存する。
-- PNG: シナリオ間の残存ノード数の比較図を保存する。
+- CSV: 要約、試行別結果、ステップ推移を分けて保存する。
+- JSON: パラメータ、要約、試行別結果、ステップ推移を保存する。
+- PNG: `remaining_nodes` または `largest_component_size` の比較図を保存する。
+- 出力には `alpha`、`attack_count`、`sample_size`、`seed`、`load_model` を含める。
 
 ## 実行方法
 
 - `python -m hitachi_network`
 - 主要オプション:
   - `--attack-count`
+  - `--random-trials`
   - `--seed`
   - `--load-model`
   - `--sample-size`
-  - `--tolerance`
+  - `--alpha`
+  - `--plot-metric`
   - `--output-dir`
+
+## 2026-07-15 検証結果
+
+- `python -m pytest` は成功した。
+- `python -m hitachi_network --attack-count 2 --sample-size 8 --load-model betweenness --seed 42 --random-trials 10 --output-dir outputs/cascade_verified` を実行し、CSV、JSON、PNG を生成した。
+- このデータでは `random_failure` の平均値が `high_load_failure` より小さく、最終残存ノード数と最大連結成分サイズの両方で被害が大きく見えた。実装上の条件差ではなく、現データでの結果としてそのまま扱う。
