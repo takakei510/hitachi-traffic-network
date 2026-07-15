@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hitachi-network"
+version = "0.1.0"
+description = "Traffic-network cascade failure simulation for the Hitachi road network"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.2,<3.0",
+  "networkx>=3.3,<4.0",
+  "matplotlib>=3.9,<4.0",
+  "numpy>=2.0,<3.0",
+]
+
+[project.scripts]
+hitachi-network = "hitachi_network.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
