@@ -11,6 +11,8 @@
 - 可視化は `src/hitachi_network/plotting.py` が担当する。
 - カスケード制御は `src/hitachi_network/cascade.py` が担当し、負荷の計算は外部から差し込む。
 - 交通網向けの分析ロジック、複数試行の集計、出力整形は `src/hitachi_network/simulation.py` にまとめる。
+- 展示用 UI は `src/hitachi_network/streamlit_app.py` が担当し、既存のシミュレーション関数を呼び出すだけにする。
+- 地点検索、半径抽出、Google Maps リンク生成は `src/hitachi_network/geospatial.py` に切り出す。
 
 ## 現在のデータモデル
 
@@ -42,9 +44,22 @@
 - PNG: `remaining_nodes` または `largest_component_size` の比較図を保存する。
 - 出力には `alpha`、`attack_count`、`sample_size`、`seed`、`load_model` を含める。
 
+## Streamlit UI
+
+- UI はシミュレーション本体と分離する。
+- 場所検索は OpenStreetMap Nominatim を使い、検索語に茨城県日立市を補助的に付ける。
+- 検索結果は `st.cache_data` でキャッシュし、連続リクエストを避ける。
+- 半径は `500 m`、`1 km`、`2 km`、`3 km` を選べるようにする。
+- 部分グラフは検索中心からの半径内ノードのみを含み、外側のノードは描画しない。
+- 既定の実行範囲は部分グラフとし、全体グラフへの切り替えもできるようにする。
+- 描画は Plotly `Scattermapbox` を使い、OpenStreetMap の背景を表示する。
+- 検索地点は専用マーカーと円で示し、ノードは緯度・経度と近隣名称をホバー表示する。
+- UI の色分けは正常ノード灰色、初期故障黒、連鎖故障赤、最大連結成分青系とする。
+
 ## 実行方法
 
 - `python -m hitachi_network`
+- `streamlit run app.py`
 - 主要オプション:
   - `--attack-count`
   - `--random-trials`
@@ -60,3 +75,5 @@
 - `python -m pytest` は成功した。
 - `python -m hitachi_network --attack-count 2 --sample-size 8 --load-model betweenness --seed 42 --random-trials 10 --output-dir outputs/cascade_verified` を実行し、CSV、JSON、PNG を生成した。
 - このデータでは `random_failure` の平均値が `high_load_failure` より小さく、最終残存ノード数と最大連結成分サイズの両方で被害が大きく見えた。実装上の条件差ではなく、現データでの結果としてそのまま扱う。
+- `streamlit run app.py --server.headless true --server.port 8501` が起動し、Streamlit サーバーの待受開始を確認した。
+- `python -m pytest` は再度成功し、地理検索、半径抽出、Google Maps URL 生成、Streamlit UI 補助関数のテストも通過した。

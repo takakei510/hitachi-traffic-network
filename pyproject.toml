@@ -12,6 +12,9 @@ dependencies = [
   "networkx>=3.3,<4.0",
   "matplotlib>=3.9,<4.0",
   "numpy>=2.0,<3.0",
+  "streamlit>=1.40,<2.0",
+  "plotly>=5.24,<6.0",
+  "streamlit-plotly-events>=0.0.6,<1.0",
 ]
 
 [project.scripts]
