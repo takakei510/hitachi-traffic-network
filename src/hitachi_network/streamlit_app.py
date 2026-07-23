@@ -359,11 +359,7 @@ def _build_map_figure(graph: nx.Graph, node_frame: pd.DataFrame, *, center_lat: 
                 lat=subset["lat"],
                 mode="markers",
                 name=STATUS_LABELS[status],
-                marker=dict(
-                    color=STATUS_COLORS[status],
-                    size=5 if status == "normal" else 10,
-                    opacity=0.95,
-                ),
+                marker=dict(color=STATUS_COLORS[status], size=5 if status == "normal" else 9),
                 customdata=subset[["display_label", "status_label", "node_id"]],
                 hovertemplate="%{customdata[0]}<br>%{customdata[1]}<extra></extra>",
             )
@@ -372,9 +368,9 @@ def _build_map_figure(graph: nx.Graph, node_frame: pd.DataFrame, *, center_lat: 
     fig.update_layout(
         title=dict(text=title, x=0.01, y=0.98, xanchor="left", yanchor="top"),
         mapbox=dict(style="open-street-map", center=dict(lat=center_lat, lon=center_lon), zoom=_zoom_for_radius(radius_m)),
-        margin=dict(l=0, r=0, t=70, b=90),
+        margin=dict(l=10, r=10, t=70, b=120),
         legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0),
-        height=760,
+        height=720,
     )
     return fig
 
@@ -383,77 +379,49 @@ def _candidate_label(candidate: PlaceCandidate) -> str:
     return candidate.display_name
 
 
-@st.cache_resource(show_spinner=False)
-def _load_cached_graph(nodes_path: str | Path, edges_path: str | Path) -> nx.MultiDiGraph:
-    return load_road_graph(nodes_path, edges_path, mode="directed")
-
-
-@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
-def _load_places_cached(query: str) -> list[PlaceCandidate]:
-    return search_places(query)
-
-
 def _node_label_options(graph: nx.Graph) -> list[Hashable]:
     return list(graph.nodes)
 
 
-def _get_selected_node(graph: nx.Graph, mode: str, load_model: str, sample_size: int, seed: int) -> tuple[Hashable, float]:
-    start = time.perf_counter()
-    if mode == "ランダム故障":
-        selected_node = select_random_nodes(graph, 1, seed=seed)[0]
-        return selected_node, (time.perf_counter() - start) * 1000.0
-    load = compute_node_load(graph, model=load_model, sample_size=sample_size, seed=seed)
-    selected_node = select_high_load_nodes(load, 1)[0]
-    return selected_node, (time.perf_counter() - start) * 1000.0
+def build_simulation_cache_key(*, center_lat: float, center_lon: float, radius_m: int, alpha: float, load_model: str, sample_size: int, seed: int, selected_node: Hashable | None, scope_mode: str) -> tuple[object, ...]:
+    return (round(center_lat, 7), round(center_lon, 7), radius_m, alpha, load_model, sample_size, seed, selected_node, scope_mode)
 
 
-def _run_trial(graph: nx.Graph, *, selected_node: Hashable, alpha: float, load_model: str, sample_size: int, seed: int):
-    return run_scenario(
-        graph,
-        name="streamlit",
-        attacked_nodes=[selected_node],
-        load_model=load_model,
-        sample_size=sample_size,
-        seed=seed,
-        alpha=alpha,
-    )
-
-
-def build_simulation_cache_key(
-    *,
-    center_lat: float,
-    center_lon: float,
-    radius_m: int,
-    alpha: float,
-    load_model: str,
-    sample_size: int,
-    seed: int,
-    selected_node: Hashable | None,
-    scope_mode: str,
-) -> tuple[object, ...]:
-    return (
-        round(center_lat, 6),
-        round(center_lon, 6),
-        radius_m,
-        alpha,
-        load_model,
-        sample_size,
-        seed,
-        selected_node,
-        scope_mode,
-    )
-
-
-def get_or_build_cached_value(cache: dict, key: tuple[object, ...], builder):
+def get_or_build_cached_value(cache: dict[tuple[object, ...], object], key: tuple[object, ...], builder):
     if key not in cache:
         cache[key] = builder()
     return cache[key]
 
 
-def resolve_active_bundle(cache: dict[tuple[object, ...], dict[str, object]], active_signature: tuple[object, ...] | None):
-    if active_signature is None:
+def resolve_active_bundle(cache: dict[tuple[object, ...], dict[str, object]], signature: tuple[object, ...] | None):
+    if signature is None:
         return None
-    return cache.get(active_signature)
+    return cache.get(signature)
+
+
+@st.cache_resource(show_spinner=False)
+def _load_cached_graph(nodes_path: Path, edges_path: Path) -> nx.Graph:
+    return load_road_graph(nodes_path, edges_path)
+
+
+@st.cache_data(show_spinner=False)
+def _load_places_cached(query: str) -> list[PlaceCandidate]:
+    return search_places(query)
+
+
+def _get_selected_node(graph: nx.Graph, selected_mode: str, load_model: str, sample_size: int, seed: int) -> tuple[Hashable | None, float]:
+    if graph.number_of_nodes() == 0:
+        return None, 0.0
+    if selected_mode == "ランダム故障":
+        return select_random_nodes(graph, 1, seed=seed)[0], 0.0
+    start = time.perf_counter()
+    loads = compute_node_load(graph, load_model=load_model, sample_size=sample_size, seed=seed)
+    elapsed = (time.perf_counter() - start) * 1000.0
+    return select_high_load_nodes(loads, 1)[0], elapsed
+
+
+def _run_trial(graph: nx.Graph, *, selected_node: Hashable, alpha: float, load_model: str, sample_size: int, seed: int):
+    return run_scenario(graph, initial_failure_nodes=[selected_node], alpha=alpha, load_model=load_model, sample_size=sample_size, seed=seed)
 
 
 def _serialize_graph_for_display(graph: nx.Graph) -> tuple[tuple[tuple[Hashable, float, float, str], ...], tuple[EdgeRow, ...]]:
@@ -466,22 +434,29 @@ def _serialize_graph_for_display(graph: nx.Graph) -> tuple[tuple[tuple[Hashable,
         )
         for node, data in graph.nodes(data=True)
     )
-    edge_rows = _build_edge_rows(graph, limit=RESULT_EDGE_LIMIT)
-    return node_rows, edge_rows
+    return node_rows, _build_edge_rows(graph, limit=RESULT_EDGE_LIMIT)
 
 
-def _build_failure_rows(graph: nx.Graph, result, step_index: int) -> tuple[FailureRow, ...]:
-    state = build_ui_state(graph, result, step_index)
+def _build_failure_rows(graph: nx.Graph, result, step_index: int, *, limit: int = RESULT_TABLE_LIMIT) -> tuple[FailureRow, ...]:
+    failed_by_step = _normalize_failed_by_step(result)
+    failed_nodes = set(_failed_nodes_from_steps(failed_by_step, step_index))
     rows: list[FailureRow] = []
-    for node in state.initial_failure_nodes:
-        data = graph.nodes[node]
-        rows.append((node, float(data.get("x", 0.0)), float(data.get("y", 0.0)), "initial_failure", node_label_with_location(graph, node)))
-    for node in state.cascade_failure_nodes:
-        data = graph.nodes[node]
-        rows.append((node, float(data.get("x", 0.0)), float(data.get("y", 0.0)), "cascade_failure", node_label_with_location(graph, node)))
-    for node in state.current_step_failure_nodes:
-        data = graph.nodes[node]
-        rows.append((node, float(data.get("x", 0.0)), float(data.get("y", 0.0)), "current_step_failure", node_label_with_location(graph, node)))
+    state = build_ui_state(graph, failed_by_step, step_index)
+    for node, data in graph.nodes(data=True):
+        if node not in failed_nodes:
+            continue
+        status = classify_node_status(node, state)
+        rows.append(
+            (
+                node,
+                float(data.get("x", 0.0)),
+                float(data.get("y", 0.0)),
+                status,
+                node_label_with_location(graph, node),
+            )
+        )
+        if len(rows) >= limit:
+            break
     return tuple(rows)
 
 
@@ -533,17 +508,7 @@ def _normal_preview_rows_to_dataframe(rows: tuple[FailureRow, ...]) -> pd.DataFr
 
 
 @st.cache_resource(show_spinner=False)
-def _edge_rows_to_figure(
-    edge_rows: tuple[EdgeRow, ...],
-    failure_rows: tuple[FailureRow, ...],
-    normal_rows: tuple[FailureRow, ...],
-    *,
-    center_lat: float,
-    center_lon: float,
-    radius_m: float,
-    title: str,
-    show_normal_nodes: bool,
-) -> go.Figure:
+def _edge_rows_to_figure(edge_rows: tuple[EdgeRow, ...], failure_rows: tuple[FailureRow, ...], normal_rows: tuple[FailureRow, ...], *, center_lat: float, center_lon: float, radius_m: float, title: str, show_normal_nodes: bool) -> go.Figure:
     circle_lon, circle_lat = _circle_coordinates(center_lat, center_lon, radius_m)
     fig = go.Figure()
     if edge_rows:
@@ -553,7 +518,7 @@ def _edge_rows_to_figure(
             edge_lon.extend([x1, x2, None])
             edge_lat.extend([y1, y2, None])
         fig.add_trace(go.Scattermapbox(lon=edge_lon, lat=edge_lat, mode="lines", line=dict(color="#d0d0d0", width=1), hoverinfo="skip", name="道路"))
-    fig.add_trace(go.Scattermapbox(lon=_circle_coordinates(center_lat, center_lon, radius_m)[0], lat=_circle_coordinates(center_lat, center_lon, radius_m)[1], mode="lines", line=dict(color="#1976d2", width=2), hoverinfo="skip", name="選択範囲"))
+    fig.add_trace(go.Scattermapbox(lon=circle_lon, lat=circle_lat, mode="lines", line=dict(color="#1976d2", width=2), hoverinfo="skip", name="選択範囲"))
     fig.add_trace(go.Scattermapbox(lon=[center_lon], lat=[center_lat], mode="markers", marker=dict(size=16, color="#ff9800", symbol="star"), hovertemplate="検索地点<extra></extra>", name="検索地点"))
     failure_frame = _failure_rows_to_dataframe(failure_rows)
     for status in ["initial_failure", "cascade_failure", "current_step_failure"]:
@@ -573,32 +538,11 @@ def build_failure_dataframe(failure_rows: tuple[FailureRow, ...]) -> pd.DataFram
     return _failure_rows_to_dataframe(failure_rows)
 
 
-def build_result_png_bytes(
-    node_rows: tuple[tuple[Hashable, float, float, str], ...],
-    edge_rows: tuple[EdgeRow, ...],
-    failed_by_step: tuple[tuple[Hashable, ...], ...],
-    step_index: int,
-    *,
-    center_lat: float,
-    center_lon: float,
-    radius_m: float,
-    title: str,
-    edge_limit: int,
-) -> bytes:
+def build_result_png_bytes(node_rows: tuple[tuple[Hashable, float, float, str], ...], edge_rows: tuple[EdgeRow, ...], failed_by_step: tuple[tuple[Hashable, ...], ...], step_index: int, *, center_lat: float, center_lon: float, radius_m: float, title: str, edge_limit: int) -> bytes:
     return _build_result_png_cached(node_rows, edge_rows, failed_by_step, step_index, center_lat, center_lon, radius_m, title, edge_limit)
 
 
-def _build_result_display_artifacts(
-    graph: nx.Graph,
-    result,
-    step_index: int,
-    *,
-    center_lat: float,
-    center_lon: float,
-    radius_m: float,
-    title: str,
-    show_normal_nodes: bool,
-) -> tuple[ResultDisplayArtifacts, list[tuple[str, float]]]:
+def _build_result_display_artifacts(graph: nx.Graph, result, step_index: int, *, center_lat: float, center_lon: float, radius_m: float, title: str, show_normal_nodes: bool) -> tuple[ResultDisplayArtifacts, list[tuple[str, float]]]:
     timings: list[tuple[str, float]] = []
     start = time.perf_counter()
     failure_rows = _build_failure_rows(graph, result, step_index)
@@ -610,7 +554,7 @@ def _build_result_display_artifacts(
     edge_rows = _build_edge_rows(graph, limit=RESULT_EDGE_LIMIT)
     map_figure = _edge_rows_to_figure(edge_rows, failure_rows, normal_rows, center_lat=center_lat, center_lon=center_lon, radius_m=radius_m, title=title, show_normal_nodes=show_normal_nodes)
     timings.append(("結果地図Figure作成", (time.perf_counter() - start) * 1000.0))
-    return (ResultDisplayArtifacts(failure_frame=_failure_rows_to_dataframe(failure_rows), normal_preview_frame=_normal_preview_rows_to_dataframe(normal_rows), map_figure=map_figure, timing_rows=tuple(timings)), timings)
+    return ResultDisplayArtifacts(failure_frame=_failure_rows_to_dataframe(failure_rows), normal_preview_frame=_normal_preview_rows_to_dataframe(normal_rows), map_figure=map_figure, timing_rows=tuple(timings)), timings
 
 
 def _timing_frame(rows: list[tuple[str, float]]) -> pd.DataFrame:
@@ -652,22 +596,18 @@ def _result_signature_text(signature: tuple[object, ...]) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def _build_failure_rows_cached(
-    node_rows: tuple[tuple[Hashable, float, float, str], ...],
-    failed_by_step: tuple[tuple[Hashable, ...], ...],
-    step_index: int,
-    limit: int,
-) -> tuple[FailureRow, ...]:
-    cumulative_failed = set(_failed_nodes_from_steps(failed_by_step, step_index))
-    initial_failed = set(failed_by_step[0]) if failed_by_step else set()
-    current_failed = set(failed_by_step[step_index]) if 0 < step_index < len(failed_by_step) else set()
+def _build_failure_rows_cached(node_rows: tuple[tuple[Hashable, float, float, str], ...], failed_by_step: tuple[tuple[Hashable, ...], ...], step_index: int, limit: int) -> tuple[FailureRow, ...]:
+    state_initial = set(failed_by_step[0]) if failed_by_step else set()
+    state_current = set(failed_by_step[step_index]) if 0 < step_index < len(failed_by_step) else set()
+    state_previous = set(_failed_nodes_from_steps(failed_by_step, max(step_index - 1, 0))) - state_initial
+    failed_nodes = state_initial | state_previous | state_current
     rows: list[FailureRow] = []
     for node_id, lon, lat, label in node_rows:
-        if node_id not in cumulative_failed:
+        if node_id not in failed_nodes:
             continue
-        if node_id in initial_failed:
+        if node_id in state_initial:
             status = "initial_failure"
-        elif node_id in current_failed:
+        elif node_id in state_current:
             status = "current_step_failure"
         else:
             status = "cascade_failure"
@@ -687,22 +627,10 @@ def _build_failure_table_cached(failure_rows: tuple[FailureRow, ...]) -> pd.Data
 
 
 @st.cache_data(show_spinner=False)
-def _build_result_png_cached(
-    node_rows: tuple[tuple[Hashable, float, float, str], ...],
-    edge_rows: tuple[EdgeRow, ...],
-    failed_by_step: tuple[tuple[Hashable, ...], ...],
-    step_index: int,
-    center_lat: float,
-    center_lon: float,
-    radius_m: float,
-    title: str,
-    edge_limit: int,
-) -> bytes:
+def _build_result_png_cached(node_rows: tuple[tuple[Hashable, float, float, str], ...], edge_rows: tuple[EdgeRow, ...], failed_by_step: tuple[tuple[Hashable, ...], ...], step_index: int, center_lat: float, center_lon: float, radius_m: float, title: str, edge_limit: int) -> bytes:
     configure_japanese_font()
     fig, ax = plt.subplots(figsize=(10, 10), dpi=160)
-    lines: list[list[tuple[float, float]]] = []
-    for x1, y1, x2, y2 in edge_rows[:edge_limit]:
-        lines.append([(x1, y1), (x2, y2)])
+    lines: list[list[tuple[float, float]]] = [[(x1, y1), (x2, y2)] for x1, y1, x2, y2 in edge_rows[:edge_limit]]
     if lines:
         ax.add_collection(LineCollection(lines, colors="#d0d0d0", linewidths=0.3, alpha=0.6, zorder=1))
     circle_lon, circle_lat = _circle_coordinates(center_lat, center_lon, radius_m)
@@ -710,20 +638,18 @@ def _build_result_png_cached(
     ax.scatter([center_lon], [center_lat], s=90, c="#ff9800", marker="*", zorder=4, label="検索中心")
     initial_failed = set(failed_by_step[0]) if failed_by_step else set()
     current_failed = set(failed_by_step[step_index]) if 0 < step_index < len(failed_by_step) else set()
-    past_failed = set(_failed_nodes_from_steps(failed_by_step, max(step_index - 1, 0))) - initial_failed
+    previous_failed = set(_failed_nodes_from_steps(failed_by_step, max(step_index - 1, 0))) - initial_failed
     node_lookup = {node_id: (lon, lat) for node_id, lon, lat, _label in node_rows}
-
-    def _scatter_failed(nodes: set[Hashable], color: str, label: str, size: int) -> None:
+    def _scatter_failed(nodes: set[Hashable], color: str, label: str) -> None:
         if not nodes:
             return
         xs = [node_lookup[node][0] for node in nodes if node in node_lookup]
         ys = [node_lookup[node][1] for node in nodes if node in node_lookup]
         if xs:
-            ax.scatter(xs, ys, s=size, c=color, alpha=0.95, zorder=5, label=label)
-
-    _scatter_failed(past_failed, STATUS_COLORS["cascade_failure"], STATUS_LABELS["cascade_failure"], 18)
-    _scatter_failed(current_failed, STATUS_COLORS["current_step_failure"], STATUS_LABELS["current_step_failure"], 28)
-    _scatter_failed(initial_failed, STATUS_COLORS["initial_failure"], STATUS_LABELS["initial_failure"], 36)
+            ax.scatter(xs, ys, s=20, c=color, alpha=0.95, zorder=5, label=label)
+    _scatter_failed(initial_failed, "#111111", "初期故障")
+    _scatter_failed(previous_failed, "#ef9a9a", "過去の連鎖故障")
+    _scatter_failed(current_failed, "#c62828", "このステップで新たに故障")
     ax.set_title(title)
     ax.set_xlabel("経度")
     ax.set_ylabel("緯度")
@@ -774,7 +700,6 @@ def main() -> None:
         st.session_state.run_id = 0
     if "selected_result_step" not in st.session_state:
         st.session_state.selected_result_step = 0
-
     with st.sidebar:
         st.header("シミュレーション設定")
         alpha = st.slider("alpha", min_value=0.0, max_value=1.0, value=0.2, step=0.05)
@@ -782,7 +707,6 @@ def main() -> None:
         sample_size = st.selectbox("sample_size", [8, 32, 100], index=0)
         seed = st.number_input("seed", min_value=0, value=42, step=1)
         show_normal_nodes = False
-
     st.subheader("1. 場所を探す")
     with st.form("place-search-form"):
         search_query = st.text_input("場所名", value=st.session_state.place_query, placeholder="日立駅")
@@ -814,7 +738,6 @@ def main() -> None:
     center_lon = selected_place.lon
     st.markdown(f"[Googleマップで開く]({build_google_maps_url(center_lat, center_lon)})")
     st.caption(f"検索地点: {selected_place.display_name}")
-
     st.subheader("2. 範囲を選ぶ")
     radius_m = st.radio("半径", RADIUS_OPTIONS_M, index=0, horizontal=True, format_func=lambda value: RADIUS_LABELS[value])
     scope_mode = st.radio("シミュレーション範囲", SCOPE_OPTIONS, index=0, horizontal=True)
@@ -822,41 +745,33 @@ def main() -> None:
     display_graph = graph if scope_mode == "全体グラフ" else extract_radius_subgraph(graph, center_lat, center_lon, float(radius_m))
     partial_extract_ms = (time.perf_counter() - partial_extract_start) * 1000.0
     simulation_graph = project_road_graph(display_graph)
-    st.info(f"現在は検索地点を中心にした {RADIUS_LABELS[radius_m]} の部分グラフでシミュレーションします。" if scope_mode == "部分グラフ" else "現在は全体グラフでシミュレーションします。")
+    if scope_mode == "部分グラフ":
+        st.info(f"現在は検索地点を中心にした {RADIUS_LABELS[radius_m]} の部分グラフでシミュレーションします。")
+    else:
+        st.info("現在は全体グラフでシミュレーションします。")
     if simulation_graph.number_of_nodes() == 0:
         st.error("半径内にノードがありません。別の場所を選ぶか、半径を広げてください。")
         st.stop()
     if simulation_graph.number_of_nodes() < 2 or simulation_graph.number_of_edges() < 1:
         st.warning("ネットワークが小さすぎるため、シミュレーションには十分な接続がありません。")
-
     st.subheader("3. 故障地点を選ぶ")
     node_options = _node_label_options(simulation_graph)
     if st.session_state.selected_node not in node_options and node_options:
         st.session_state.selected_node = node_options[0]
-    preview_frame = pd.DataFrame({
-        "node_id": node_options,
-        "x": [float(simulation_graph.nodes[n].get("x", 0.0)) for n in node_options],
-        "y": [float(simulation_graph.nodes[n].get("y", 0.0)) for n in node_options],
-        "lon": [float(simulation_graph.nodes[n].get("x", 0.0)) for n in node_options],
-        "lat": [float(simulation_graph.nodes[n].get("y", 0.0)) for n in node_options],
-        "status": ["normal"] * len(node_options),
-        "status_label": [STATUS_LABELS["normal"]] * len(node_options),
-        "display_label": [node_label_with_location(simulation_graph, node) for node in node_options],
-    })
+    preview_frame = pd.DataFrame({"node_id": node_options, "x": [float(simulation_graph.nodes[n].get("x", 0.0)) for n in node_options], "y": [float(simulation_graph.nodes[n].get("y", 0.0)) for n in node_options], "lon": [float(simulation_graph.nodes[n].get("x", 0.0)) for n in node_options], "lat": [float(simulation_graph.nodes[n].get("y", 0.0)) for n in node_options], "status": ["normal"] * len(node_options), "status_label": [STATUS_LABELS["normal"]] * len(node_options), "display_label": [node_label_with_location(simulation_graph, node) for node in node_options]})
     preview_fig = _build_map_figure(simulation_graph, preview_frame, center_lat=center_lat, center_lon=center_lon, radius_m=float(radius_m), title="道路ネットワーク")
     selected_mode = st.radio("故障地点の選び方", ["候補ノード選択", "ランダム故障", "高負荷ノード故障"], index=0)
     initial_load_ms = 0.0
     if selected_mode == "候補ノード選択":
         st.session_state.selected_node = st.selectbox("故障候補ノード", node_options, index=node_options.index(st.session_state.selected_node) if st.session_state.selected_node in node_options else 0, format_func=lambda node: build_selected_node_label(node, simulation_graph))
-        st.plotly_chart(preview_fig, use_container_width=True)
+        st.plotly_chart(preview_fig, width="stretch")
     else:
         selected_node, initial_load_ms = _get_selected_node(simulation_graph, selected_mode, load_model, int(sample_size), int(seed))
         if st.session_state.get("selected_node") != selected_node:
             st.session_state.selected_node = selected_node
         if st.session_state.selected_node is not None:
             st.info(f"自動選択ノード: {build_selected_node_label(st.session_state.selected_node, simulation_graph)}")
-        st.plotly_chart(preview_fig, use_container_width=True)
-
+        st.plotly_chart(preview_fig, width="stretch")
     st.subheader("4. シミュレーションを実行")
     current_signature = build_simulation_cache_key(center_lat=selected_place.lat, center_lon=selected_place.lon, radius_m=int(radius_m), alpha=float(alpha), load_model=load_model, sample_size=int(sample_size), seed=int(seed), selected_node=st.session_state.selected_node, scope_mode=scope_mode)
     run_disabled = st.session_state.selected_node is None or simulation_graph.number_of_nodes() < 2 or simulation_graph.number_of_edges() < 1
@@ -867,10 +782,10 @@ def main() -> None:
         st.write(f"現在の故障地点: {build_selected_node_label(st.session_state.selected_node, simulation_graph) if st.session_state.selected_node is not None else '未選択'}")
         st.write(f"現在の半径: {RADIUS_LABELS[radius_m]}")
         simulation_submit = st.form_submit_button("シミュレーションを実行", disabled=run_disabled)
-
     if simulation_submit:
         st.session_state.run_id += 1
         run_id = st.session_state.run_id
+        st.write(f"run_id: {run_id}")
         with st.spinner("カスケード故障を計算しています..."):
             try:
                 if current_signature not in simulation_cache:
@@ -895,37 +810,22 @@ def main() -> None:
                     table_start = time.perf_counter()
                     _build_failure_table_cached(failure_rows)
                     table_ms = (time.perf_counter() - table_start) * 1000.0
-                    simulation_cache[current_signature] = {
-                        "failed_by_step": failed_by_step,
-                        "final_failed_nodes": final_failed_nodes,
-                        "metrics": metrics,
-                        "node_rows": node_rows,
-                        "edge_rows": edge_rows,
-                        "center_lat": execution_center_lat,
-                        "center_lon": execution_center_lon,
-                        "radius_m": execution_radius_m,
-                        "step_index": final_step_index,
-                        "png_bytes": png_bytes,
-                        "failure_rows": failure_rows,
-                        "timings": tuple(base_timings + [("結果状態DataFrame作成", result_state_ms), ("結果地図Figure作成", map_ms), ("結果表表示直前まで", table_ms)]),
-                        "run_id": run_id,
-                    }
+                    simulation_cache[current_signature] = {"failed_by_step": failed_by_step, "final_failed_nodes": final_failed_nodes, "metrics": metrics, "node_rows": node_rows, "edge_rows": edge_rows, "center_lat": execution_center_lat, "center_lon": execution_center_lon, "radius_m": execution_radius_m, "step_index": final_step_index, "png_bytes": png_bytes, "failure_rows": failure_rows, "timings": tuple(base_timings + [("結果状態DataFrame作成", result_state_ms), ("結果地図Figure作成", map_ms), ("結果表表示直前まで", table_ms)]), "run_id": run_id}
                 st.session_state.active_result_signature = current_signature
-                bundle = simulation_cache[current_signature]
-                st.session_state.selected_result_step = int(bundle["step_index"])
+                st.session_state.selected_result_step = 0
             except Exception as exc:
                 st.error(f"シミュレーションに失敗しました: {exc}")
                 st.session_state.active_result_signature = None
-
     active_signature = st.session_state.active_result_signature
     bundle = resolve_active_bundle(simulation_cache, active_signature)
     if bundle is None:
         return
-
     failed_by_step = bundle["failed_by_step"]
     final_step_index = max(len(failed_by_step) - 1, 0)
     st.subheader("5. カスケードの進行を確認")
-    control_left, control_center, control_right = st.columns([1, 3, 1])
+    st.caption("ステップ0は初期故障です。ステップを進めると、新しく容量超過したノードが濃い赤で表示されます。")
+    st.session_state.selected_result_step = min(int(st.session_state.selected_result_step), final_step_index)
+    control_left, control_center, control_right = st.columns([1, 4, 1])
     with control_left:
         if st.button("◀ 前のステップ", disabled=st.session_state.selected_result_step <= 0):
             st.session_state.selected_result_step = max(st.session_state.selected_result_step - 1, 0)
@@ -935,7 +835,6 @@ def main() -> None:
     with control_center:
         step_index = st.slider("表示するステップ", min_value=0, max_value=final_step_index, value=min(int(st.session_state.selected_result_step), final_step_index), step=1, key="cascade_step_slider")
     st.session_state.selected_result_step = step_index
-
     display_key = (active_signature, step_index, show_normal_nodes)
     if display_key not in display_cache:
         node_rows = bundle["node_rows"]
@@ -952,7 +851,14 @@ def main() -> None:
         display_cache[display_key] = {
             "failure_rows": failure_rows,
             "png_bytes": png_bytes,
-            "timings": tuple(bundle["timings"][:-3] + [("結果状態DataFrame作成", result_state_ms), ("結果地図Figure作成", map_ms), ("結果表表示直前まで", table_ms)]),
+            "timings": tuple(
+                bundle["timings"][:-3]
+                + (
+                    ("結果状態DataFrame作成", result_state_ms),
+                    ("結果地図Figure作成", map_ms),
+                    ("結果表表示直前まで", table_ms),
+                )
+            ),
             "step_index": step_index,
         }
     display_bundle = display_cache[display_key]
@@ -966,34 +872,42 @@ def main() -> None:
     debug_png_path.parent.mkdir(parents=True, exist_ok=True)
     debug_png_path.write_bytes(result_png_bytes)
     timings = list(display_bundle["timings"])
-
     st.subheader("結果")
+    metric_columns = st.columns(5)
+    metric_columns[0].metric("現在のステップ", f"{step_index} / {final_step_index}")
+    metric_columns[1].metric("このステップの新規故障", new_failed_count)
+    metric_columns[2].metric("累積故障", cumulative_failed_count)
+    metric_columns[3].metric("残存ノード", metrics["final_surviving_nodes"])
+    metric_columns[4].metric("最大連結成分比", f"{metrics['largest_component_ratio']:.3f}")
     st.write(f"run_id: {bundle.get('run_id', st.session_state.run_id)}")
     st.write(f"検索地点: {selected_place.display_name}")
     st.write(f"シミュレーション範囲: {scope_mode}")
     st.write(f"故障地点: {build_selected_node_label(st.session_state.selected_node, simulation_graph) if st.session_state.selected_node is not None else '未選択'}")
-    summary_cols = st.columns(4)
-    summary_cols[0].metric("現在のステップ", f"{step_index} / {final_step_index}")
-    summary_cols[1].metric("このステップで新たに故障", new_failed_count)
-    summary_cols[2].metric("累積故障", cumulative_failed_count)
-    summary_cols[3].metric("残存ノード", metrics["final_surviving_nodes"])
-    detail_cols = st.columns(3)
-    detail_cols[0].metric("最大連結成分サイズ", metrics["largest_component_size"])
-    detail_cols[1].metric("最大連結成分比", f"{metrics['largest_component_ratio']:.3f}")
-    detail_cols[2].metric("初期故障数", initial_failed_count)
-    st.caption("黒: 初期故障、濃い赤: このステップで新たに故障、薄い赤: 以前のステップで故障")
-
+    st.write(f"初期ノード数: {metrics['initial_nodes']}")
+    st.write(f"現在の残存ノード数: {metrics['final_surviving_nodes']}")
+    st.write(f"初期故障数: {initial_failed_count}")
+    st.write(f"このステップで新たに故障: {new_failed_count}")
+    st.write(f"累積故障数: {cumulative_failed_count}")
+    st.write(f"最大連結成分サイズ: {metrics['largest_component_size']}")
+    st.write(f"最大連結成分比: {metrics['largest_component_ratio']:.3f}")
+    st.write(f"表示中のカスケードステップ: {metrics['cascade_steps']}")
+    st.write(f"道路データ読み込み: {st.session_state.last_road_data_load_ms:.1f} ms")
+    st.write(f"部分グラフ抽出: {partial_extract_ms:.1f} ms")
+    st.write(f"初期負荷計算: {initial_load_ms:.1f} ms")
+    st.write(f"カスケード計算: {next((value for name, value in timings if name == 'カスケード計算'), 0.0):.1f} ms")
+    st.write(f"PNGサイズ: {len(result_png_bytes)} bytes")
+    st.write(f"結果表行数: {len(failure_dataframe)}")
     with st.expander("性能計測"):
-        st.dataframe(_timing_frame(timings), use_container_width=True, hide_index=True)
+        st.dataframe(_timing_frame(timings), width="stretch", hide_index=True)
     if RESULT_DISPLAY_STAGE >= 2:
         st.subheader("結果地図")
-        st.image(str(debug_png_path), use_container_width=True)
+        st.image(str(debug_png_path), width="stretch")
     if RESULT_DISPLAY_STAGE >= 3:
         st.subheader("結果表")
         if failure_dataframe.empty:
             st.info("このステップで表示する故障ノードはありません。")
         else:
-            st.dataframe(failure_dataframe.head(RESULT_TABLE_LIMIT), use_container_width=True, hide_index=True)
+            st.dataframe(failure_dataframe.head(RESULT_TABLE_LIMIT), width="stretch", hide_index=True)
 
 
 if __name__ == "__main__":
