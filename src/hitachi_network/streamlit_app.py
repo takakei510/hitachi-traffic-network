@@ -221,7 +221,18 @@ def build_network_figure(graph: nx.Graph, node_frame: pd.DataFrame, *, title: st
     simple_graph = project_road_graph(graph)
     edge_x, edge_y = _edge_coordinates(simple_graph)
     fig = go.Figure()
-    fig.add_trace(go.Scattergl(x=edge_x, y=edge_y, mode="lines", line=dict(color="#d0d0d0", width=0.5), hoverinfo="skip", name="道路"))
+
+    fig.add_trace(
+        go.Scattergl(
+            x=edge_x,
+            y=edge_y,
+            mode="lines",
+            line=dict(color="#d0d0d0", width=0.5),
+            hoverinfo="skip",
+            name="道路",
+        )
+    )
+
     for status in ["normal", "largest_component", "cascade_failure", "current_step_failure", "initial_failure"]:
         subset = node_frame[node_frame["status"] == status]
         if subset.empty:
@@ -232,11 +243,16 @@ def build_network_figure(graph: nx.Graph, node_frame: pd.DataFrame, *, title: st
                 y=subset["y"],
                 mode="markers",
                 name=STATUS_LABELS[status],
-                marker=dict(color=STATUS_COLORS[status], size=6 if status == "normal" else 9, line=dict(color="#ffffff", width=0.2)),
+                marker=dict(
+                    color=STATUS_COLORS[status],
+                    size=6 if status == "normal" else 9,
+                    line=dict(color="#ffffff", width=0.2),
+                ),
                 customdata=subset[["node_id", "status_label"]],
                 hovertemplate="ノード=%{customdata[0]}<br>%{customdata[1]}<extra></extra>",
             )
         )
+
     fig.update_layout(
         title=dict(text=title, x=0.01, y=0.98, xanchor="left", yanchor="top"),
         template="plotly_white",
@@ -269,6 +285,7 @@ def _circle_coordinates(center_lat: float, center_lon: float, radius_m: float, *
         )
         latitudes.append(degrees(point_lat))
         longitudes.append(degrees(point_lon))
+
     return longitudes, latitudes
 
 
@@ -294,23 +311,76 @@ def _build_map_figure(graph: nx.Graph, node_frame: pd.DataFrame, *, center_lat: 
 
     circle_lon, circle_lat = _circle_coordinates(center_lat, center_lon, radius_m)
     fig = go.Figure()
+
     if edge_lon:
-        fig.add_trace(go.Scattermapbox(lon=edge_lon, lat=edge_lat, mode="lines", line=dict(color="#c9c9c9", width=1), hoverinfo="skip", name="道路", showlegend=False))
-    fig.add_trace(go.Scattermapbox(lon=circle_lon, lat=circle_lat, mode="lines", line=dict(color="#1976d2", width=2), hoverinfo="skip", name="範囲"))
-    fig.add_trace(go.Scattermapbox(lon=[center_lon], lat=[center_lat], mode="markers", marker=dict(size=16, color="#ff9800", symbol="star"), hovertemplate="検索地点<extra></extra>", name="検索地点"))
+        fig.add_trace(
+            go.Scattermapbox(
+                lon=edge_lon,
+                lat=edge_lat,
+                mode="lines",
+                line=dict(color="#c9c9c9", width=1),
+                hoverinfo="skip",
+                name="道路",
+                showlegend=False,
+            )
+        )
+
+    fig.add_trace(
+        go.Scattermapbox(
+            lon=circle_lon,
+            lat=circle_lat,
+            mode="lines",
+            line=dict(color="#1976d2", width=2),
+            hoverinfo="skip",
+            name="範囲",
+        )
+    )
+
+    fig.add_trace(
+        go.Scattermapbox(
+            lon=[center_lon],
+            lat=[center_lat],
+            mode="markers",
+            marker=dict(size=16, color="#ff9800", symbol="star"),
+            hovertemplate="検索地点<extra></extra>",
+            name="検索地点",
+        )
+    )
+
     for status in ["normal", "largest_component", "cascade_failure", "current_step_failure", "initial_failure"]:
         subset = node_frame[node_frame["status"] == status]
         if subset.empty:
             continue
-        fig.add_trace(go.Scattermapbox(lon=subset["lon"], lat=subset["lat"], mode="markers", name=STATUS_LABELS[status], marker=dict(color=STATUS_COLORS[status], size=5 if status == "normal" else 9, opacity=0.9), customdata=subset[["display_label", "status_label"]], hovertemplate="%{customdata[0]}<br>%{customdata[1]}<extra></extra>"))
+        fig.add_trace(
+            go.Scattermapbox(
+                lon=subset["lon"],
+                lat=subset["lat"],
+                mode="markers",
+                name=STATUS_LABELS[status],
+                marker=dict(color=STATUS_COLORS[status], size=5 if status == "normal" else 10, opacity=0.9),
+                customdata=subset[["display_label", "status_label", "node_id"]],
+                hovertemplate="%{customdata[0]}<br>%{customdata[1]}<extra></extra>",
+            )
+        )
+
     fig.update_layout(
         title=dict(text=title, x=0.01, y=0.98, xanchor="left", yanchor="top"),
         mapbox=dict(style="open-street-map", center=dict(lat=center_lat, lon=center_lon), zoom=_zoom_for_radius(radius_m)),
-        margin=dict(l=10, r=10, t=70, b=90),
+        margin=dict(l=10, r=10, t=70, b=70),
         legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0),
         height=760,
     )
     return fig
+
+
+def _candidate_label(candidate: PlaceCandidate) -> str:
+    primary = candidate.display_name.split(",")[0]
+    return f"{primary} ({candidate.lat:.5f}, {candidate.lon:.5f})"
+
+
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def _load_places_cached(query: str) -> list[PlaceCandidate]:
+    return search_places(query, limit=8)
 
 
 def _node_label_options(graph: nx.Graph) -> list[Hashable]:
@@ -367,7 +437,15 @@ def _run_trial(graph: nx.Graph, *, selected_node: Hashable, alpha: float, load_m
 
 
 def _serialize_graph_for_display(graph: nx.Graph) -> tuple[tuple[tuple[Hashable, float, float, str], ...], tuple[EdgeRow, ...]]:
-    node_rows = tuple((node, float(data.get("x", 0.0)), float(data.get("y", 0.0)), node_label_with_location(graph, node)) for node, data in graph.nodes(data=True))
+    node_rows = tuple(
+        (
+            node,
+            float(data.get("x", 0.0)),
+            float(data.get("y", 0.0)),
+            node_label_with_location(graph, node),
+        )
+        for node, data in graph.nodes(data=True)
+    )
     return node_rows, _build_edge_rows(graph, limit=RESULT_EDGE_LIMIT)
 
 
@@ -777,7 +855,14 @@ def main() -> None:
         display_cache[display_key] = {
             "failure_rows": failure_rows,
             "png_bytes": png_bytes,
-            "timings": tuple(bundle["timings"][:-3] + (("結果状態DataFrame作成", result_state_ms), ("結果地図Figure作成", map_ms), ("結果表表示直前まで", table_ms))),
+            "timings": tuple(
+                bundle["timings"][:-3]
+                + (
+                    ("結果状態DataFrame作成", result_state_ms),
+                    ("結果地図Figure作成", map_ms),
+                    ("結果表表示直前まで", table_ms),
+                )
+            ),
             "step_index": step_index,
         }
     display_bundle = display_cache[display_key]
@@ -792,22 +877,21 @@ def main() -> None:
     debug_png_path.write_bytes(result_png_bytes)
     timings = list(display_bundle["timings"])
 
-    metric_cols = st.columns(5)
-    metric_cols[0].metric("現在のステップ", f"{step_index} / {final_step_index}")
-    metric_cols[1].metric("このステップで新たに故障", new_failed_count)
-    metric_cols[2].metric("累積故障数", cumulative_failed_count)
-    metric_cols[3].metric("残存ノード数", int(metrics["final_surviving_nodes"]))
-    metric_cols[4].metric("最大連結成分比", f"{float(metrics['largest_component_ratio']):.3f}")
-
     st.subheader("結果")
+    metric_columns = st.columns(5)
+    metric_columns[0].metric("表示ステップ", f"{step_index} / {final_step_index}")
+    metric_columns[1].metric("このステップの新規故障", new_failed_count)
+    metric_columns[2].metric("累積故障", cumulative_failed_count)
+    metric_columns[3].metric("残存ノード", metrics["final_surviving_nodes"])
+    metric_columns[4].metric("最大連結成分比", f"{metrics['largest_component_ratio']:.3f}")
     st.write(f"run_id: {bundle.get('run_id', st.session_state.run_id)}")
     st.write(f"検索地点: {selected_place.display_name}")
     st.write(f"シミュレーション範囲: {scope_mode}")
     st.write(f"故障地点: {build_selected_node_label(st.session_state.selected_node, simulation_graph) if st.session_state.selected_node is not None else '未選択'}")
     st.write(f"初期ノード数: {metrics['initial_nodes']}")
-    st.write(f"現在の残存ノード数: {metrics['final_surviving_nodes']}")
+    st.write(f"残存ノード数: {metrics['final_surviving_nodes']}")
     st.write(f"初期故障数: {initial_failed_count}")
-    st.write(f"このステップで新たに故障: {new_failed_count}")
+    st.write(f"このステップで新たに故障したノード数: {new_failed_count}")
     st.write(f"累積故障数: {cumulative_failed_count}")
     st.write(f"最大連結成分サイズ: {metrics['largest_component_size']}")
     st.write(f"最大連結成分比: {metrics['largest_component_ratio']:.3f}")
