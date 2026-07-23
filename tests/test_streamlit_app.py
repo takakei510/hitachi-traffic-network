@@ -58,7 +58,7 @@ def test_node_status_classification_is_correct() -> None:
     state = build_ui_state(graph, trial, 1)
 
     assert classify_node_status(1, state) == "initial_failure"
-    assert classify_node_status(3, state) == "cascade_failure"
+    assert classify_node_status(3, state) == "current_step_failure"
     assert classify_node_status(2, state) in {"largest_component", "normal"}
 
 
@@ -68,7 +68,8 @@ def test_display_dataframe_has_expected_columns() -> None:
     frame = build_ui_state(graph, trial, 1)
 
     assert frame.initial_failure_nodes == {1}
-    assert frame.cascade_failure_nodes == {3}
+    assert frame.current_step_failure_nodes == {3}
+    assert frame.cascade_failure_nodes == set()
 
 
 def test_metrics_are_calculated_correctly() -> None:
@@ -79,21 +80,47 @@ def test_metrics_are_calculated_correctly() -> None:
     assert metrics["initial_nodes"] == 4
     assert metrics["final_surviving_nodes"] == 2
     assert metrics["cumulative_failed_count"] == 2
+    assert metrics["new_failed_count"] == 1
     assert metrics["largest_component_size"] <= metrics["final_surviving_nodes"]
     assert metrics["largest_component_ratio"] <= 1.0
 
 
+def test_step_zero_contains_only_initial_failure() -> None:
+    graph = _build_graph()
+    failed_by_step = ((1,), (3,))
+    state = build_ui_state(graph, failed_by_step, 0)
+
+    assert state.initial_failure_nodes == {1}
+    assert state.current_step_failure_nodes == set()
+    assert state.cascade_failure_nodes == set()
+    assert state.removed_nodes == {1}
+
+
+def test_middle_step_separates_past_and_current_failures() -> None:
+    graph = nx.path_graph(5)
+    for node in graph.nodes:
+        graph.nodes[node]["x"] = float(node)
+        graph.nodes[node]["y"] = 0.0
+    failed_by_step = ((0,), (2,), (4,))
+    state = build_ui_state(graph, failed_by_step, 2)
+
+    assert state.initial_failure_nodes == {0}
+    assert state.cascade_failure_nodes == {2}
+    assert state.current_step_failure_nodes == {4}
+    assert state.removed_nodes == {0, 2, 4}
+
+
 def test_failure_table_contains_only_failed_nodes() -> None:
     graph = _build_graph()
-    trial = _build_trial()
-    node_rows, edge_rows = _serialize_graph_for_display(graph)
+    node_rows, _edge_rows = _serialize_graph_for_display(graph)
     failed_by_step = ((1,), (3,))
     failure_rows = _build_failure_rows_cached(node_rows, failed_by_step, 1, 200)
     frame = _build_failure_table_cached(failure_rows)
     rebuilt = build_failure_dataframe(failure_rows)
 
     assert not frame.empty
-    assert set(frame["status"]) <= {"initial_failure", "cascade_failure"}
+    assert set(frame["status"]) <= {"initial_failure", "cascade_failure", "current_step_failure"}
+    assert set(frame["status"]) == {"initial_failure", "current_step_failure"}
     assert len(frame) <= 200
     assert not rebuilt.empty
     assert list(rebuilt.columns) == ["node_id", "x", "y", "status", "display_label", "lon", "lat", "status_label"]
@@ -189,7 +216,7 @@ def test_preview_map_uses_bottom_legend_and_top_left_title() -> None:
             "lon": [0.0, 1.0, 2.0, 3.0],
             "lat": [0.0, 0.0, 0.0, 0.0],
             "status": ["normal", "largest_component", "cascade_failure", "initial_failure"],
-            "status_label": ["正常ノード", "最大連結成分", "連鎖故障ノード", "初期故障ノード"],
+            "status_label": ["正常ノード", "最大連結成分", "過去の連鎖故障ノード", "初期故障ノード"],
             "display_label": ["a", "b", "c", "d"],
         }
     )
