@@ -56,14 +56,30 @@ def compute_edge_load(
     graph: nx.Graph,
     *,
     normalized: bool = True,
+    sample_size: int | None = None,
+    seed: int | None = 42,
 ) -> dict[EdgeId, float]:
-    """Compute edge betweenness centrality using road length as path cost."""
+    """Compute edge betweenness using road length as path cost.
+
+    ``sample_size`` limits the number of source nodes used by NetworkX.  When it
+    is ``None``, non-positive, or at least the graph's node count, an exact
+    calculation is performed.  Sampling is useful for 2–3 km display areas,
+    where exact edge betweenness can be too slow for an interactive exhibit.
+    """
     if graph.number_of_edges() == 0:
         return {}
+
+    node_count = graph.number_of_nodes()
+    k = None
+    if sample_size is not None and sample_size > 0 and sample_size < node_count:
+        k = sample_size
+
     centrality = nx.edge_betweenness_centrality(
         graph,
+        k=k,
         normalized=normalized,
         weight="length",
+        seed=seed,
     )
     return {
         canonical_edge(graph, u, v): float(value)
@@ -80,16 +96,8 @@ def build_length_adjusted_capacities(
 ) -> dict[EdgeId, float]:
     """Build capacities without allowing baseline overloads.
 
-    The previous formula multiplied capacity directly by ``length / mean_length``.
-    Short roads therefore received capacities below their own initial loads and
-    could be overloaded before any attack occurred.  The revised formula keeps
-    ``(1 + alpha) * initial_load`` as the minimum capacity and gives only roads
-    longer than the mean an additional length-based bonus::
-
-        C_e = L_e(0) * (1 + alpha) *
-              (1 + length_weight * max(length_e / mean_length - 1, 0))
-
-    ``length_weight`` controls how strongly road length increases capacity.
+    C_e = L_e(0) * (1 + alpha) *
+          (1 + length_weight * max(length_e / mean_length - 1, 0))
     """
     if alpha < 0.0:
         raise ValueError("alpha must be non-negative")
@@ -139,16 +147,17 @@ def run_road_capacity_cascade(
     attacked_edges: list[EdgeId],
     alpha: float = 0.2,
     length_weight: float = 0.5,
+    sample_size: int | None = None,
+    seed: int | None = 42,
     max_steps: int | None = None,
 ) -> RoadCascadeResult:
-    """Run an edge-based cascade while preserving the original graph.
-
-    Capacity is based on initial edge betweenness.  Every road receives at
-    least the base margin ``alpha``; roads longer than the mean receive an
-    additional capacity bonus controlled by ``length_weight``.
-    """
+    """Run an edge-based cascade while preserving the original graph."""
     current = graph.copy()
-    initial_loads = compute_edge_load(current)
+    initial_loads = compute_edge_load(
+        current,
+        sample_size=sample_size,
+        seed=seed,
+    )
     capacities = build_length_adjusted_capacities(
         current,
         initial_loads,
@@ -185,7 +194,11 @@ def run_road_capacity_cascade(
     while current.number_of_edges() > 0:
         if max_steps is not None and step_index >= max_steps:
             break
-        loads = compute_edge_load(current)
+        loads = compute_edge_load(
+            current,
+            sample_size=sample_size,
+            seed=seed,
+        )
         ratios = _load_ratios(current, loads, capacities)
         overloaded = {
             edge
