@@ -34,12 +34,14 @@ RADIUS_OPTIONS = {
     "3 km": 3000,
     "5 km": 5000,
 }
+
 SAMPLE_OPTIONS = {
     "高速（32ノード）": 32,
     "標準（64ノード）": 64,
     "高精度（128ノード）": 128,
     "厳密計算": None,
 }
+
 RATIO_BINS = [
     ("safe", "余裕あり（0.0–0.4）", "#90caf9", 0.0, 0.4),
     ("moderate", "比較的安全（0.4–0.7）", "#4dd0e1", 0.4, 0.7),
@@ -68,7 +70,9 @@ def edge_label(graph: nx.Graph, edge: EdgeId) -> str:
     u, v = edge
     data = graph.get_edge_data(u, v, default={})
     length = float(data.get("length", 0.0))
-    return f"{u} → {v}（長さ {length:.1f} m）"
+    lanes = data.get("lanes")
+    lane_text = "不明" if lanes is None or str(lanes).lower() == "nan" else str(lanes)
+    return f"{u} → {v}（長さ {length:.1f} m / lanes={lane_text}）"
 
 
 def choose_attack_edge(
@@ -101,6 +105,7 @@ def _line_trace(
     lon: list[float | None] = []
     lat: list[float | None] = []
     custom: list[str | None] = []
+
     for u, v in edges:
         if u not in graph or v not in graph:
             continue
@@ -110,6 +115,7 @@ def _line_trace(
         lon.extend([float(u_data.get("x", 0.0)), float(v_data.get("x", 0.0)), None])
         lat.extend([float(u_data.get("y", 0.0)), float(v_data.get("y", 0.0)), None])
         custom.extend([label, label, None])
+
     return go.Scattermapbox(
         lon=lon,
         lat=lat,
@@ -151,6 +157,7 @@ def build_step_map(
         for u, v in graph.edges()
         if canonical_edge(graph, u, v) not in cumulative_failed
     ]
+
     groups: dict[str, list[EdgeId]] = {key: [] for key, *_ in RATIO_BINS}
     for edge in active_edges:
         groups[ratio_category(float(step.load_ratios.get(edge, 0.0)))].append(edge)
@@ -241,16 +248,23 @@ def build_edge_table(graph: nx.Graph, result: RoadCascadeResult) -> pd.DataFrame
     for step_index, edges in enumerate(result.failed_by_step):
         for edge in edges:
             failure_step[edge] = step_index
-    rows = []
+
+    rows: list[dict[str, object]] = []
     for u, v, data in graph.edges(data=True):
         edge = canonical_edge(graph, u, v)
         initial_load = result.initial_loads.get(edge, 0.0)
         capacity = result.capacities.get(edge, 0.0)
+        lane_info = result.lane_info.get(edge)
         rows.append(
             {
                 "始点": u,
                 "終点": v,
                 "道路長[m]": round(float(data.get("length", 0.0)), 2),
+                "元のlanes": None if lane_info is None else lane_info.raw_value,
+                "合計車線数": None if lane_info is None else lane_info.total_lanes,
+                "実効車線数": None if lane_info is None else lane_info.effective_lanes,
+                "車線数の根拠": None if lane_info is None else lane_info.source,
+                "一方通行": None if lane_info is None else lane_info.is_oneway,
                 "初期負荷": initial_load,
                 "容量": capacity,
                 "初期負荷率": (initial_load / capacity) if capacity > 0 else 0.0,
@@ -264,8 +278,8 @@ st.set_page_config(page_title="Road Capacity Cascade", layout="wide")
 st.title("道路容量カスケード故障モード")
 st.caption("既存の交差点（ノード）故障モデルとは独立した、道路（エッジ）故障モデルです。")
 st.info(
-    "容量は Cₑ=Lₑ(0)(1+α)[1+w·max(道路長/平均道路長−1, 0)] で定義します。"
-    "短い道路でも初期負荷を下回る容量にならず、平均より長い道路だけに追加容量を与えます。"
+    "容量は Cₑ=Lₑ(0)(1+α)×道路長補正×車線数補正 で定義します。"
+    "車線数が欠損している場合は highway 属性から保守的に推定します。"
 )
 
 with st.sidebar:
@@ -277,7 +291,21 @@ with st.sidebar:
         2.0,
         0.5,
         0.1,
-        help="平均道路長を超えた分を、容量へどれだけ強く反映するかを指定します。0では道路長補正なしです。",
+        help="平均道路長を超えた分を容量へどれだけ強く反映するかを指定します。0では道路長補正なしです。",
+    )
+    use_lane_correction = st.toggle(
+        "車線数補正を使用する",
+        value=True,
+        help="OFFにすると車線数を容量へ反映しません。道路長補正との比較に使えます。",
+    )
+    lane_weight = st.slider(
+        "車線数の影響 wₙ",
+        0.0,
+        2.0,
+        0.5,
+        0.1,
+        disabled=not use_lane_correction,
+        help="実効車線数が1を超えた分を容量へどれだけ反映するかを指定します。",
     )
     calculation_mode = st.selectbox(
         "媒介中心性の計算精度",
@@ -290,7 +318,8 @@ with st.sidebar:
     attack_mode = st.radio("初期故障道路の選び方", ["高負荷道路", "ランダム道路", "候補から選択"])
 
 st.caption(
-    "alphaを大きくすると全道路が壊れにくくなります。道路長の影響wを大きくすると、平均より長い道路がより壊れにくくなります。"
+    "alphaは全道路の基本余裕、道路長の影響wは長い道路への追加容量、"
+    "車線数の影響wₙは多車線道路への追加容量を調整します。"
 )
 
 graph = load_graph()
@@ -303,25 +332,27 @@ places = st.session_state.get("road_places", [])
 if not places:
     st.error("検索結果がありません。")
     st.stop()
+
 selected_place = st.selectbox("検索候補", places, format_func=lambda p: p.display_name)
 radius_label = st.radio("対象範囲", list(RADIUS_OPTIONS), horizontal=True, index=1)
 radius_m = RADIUS_OPTIONS[radius_label]
-subgraph = project_road_graph(extract_radius_subgraph(graph, selected_place.lat, selected_place.lon, radius_m))
+subgraph = project_road_graph(
+    extract_radius_subgraph(graph, selected_place.lat, selected_place.lon, radius_m)
+)
 
-st.write(f"対象ノード数: **{subgraph.number_of_nodes()}** / 対象道路数: **{subgraph.number_of_edges()}**")
+st.write(
+    f"対象ノード数: **{subgraph.number_of_nodes()}** / "
+    f"対象道路数: **{subgraph.number_of_edges()}**"
+)
 
 effective_sample_size = sample_size
 effective_calculation_mode = calculation_mode
 if radius_m >= 5000 and (sample_size is None or sample_size > 64):
     effective_sample_size = 64
     effective_calculation_mode = "標準（64ノード・5 km自動制限）"
-    st.warning(
-        "5 kmでは処理時間とメモリ使用量を抑えるため、媒介中心性計算を64サンプルへ自動制限します。"
-    )
+    st.warning("5 kmでは処理時間とメモリ使用量を抑えるため、媒介中心性計算を64サンプルへ自動制限します。")
 elif radius_m >= 3000 and sample_size is None:
-    st.warning(
-        "3 kmで厳密計算を選ぶと、環境によっては数分以上かかる場合があります。高速または標準を推奨します。"
-    )
+    st.warning("3 kmで厳密計算を選ぶと数分以上かかる場合があります。高速または標準を推奨します。")
 
 if subgraph.number_of_edges() == 0:
     st.warning("この範囲には道路がありません。範囲を広げてください。")
@@ -344,6 +375,8 @@ if st.button("Road Capacity Cascadeを実行", type="primary"):
             attacked_edges=[initial_edge],
             alpha=alpha,
             length_weight=length_weight,
+            lane_weight=lane_weight,
+            use_lane_correction=use_lane_correction,
             sample_size=effective_sample_size,
             seed=int(seed),
         )
@@ -353,6 +386,8 @@ if st.button("Road Capacity Cascadeを実行", type="primary"):
         st.session_state.road_parameters = {
             "alpha": alpha,
             "length_weight": length_weight,
+            "use_lane_correction": use_lane_correction,
+            "lane_weight": lane_weight,
             "calculation_mode": effective_calculation_mode,
             "sample_size": effective_sample_size,
             "seed": int(seed),
@@ -363,26 +398,27 @@ result_graph: nx.Graph | None = st.session_state.get("road_graph")
 if result is not None and result_graph is not None:
     st.subheader("ステップごとの負荷率ヒートマップ")
     params = st.session_state.get("road_parameters", {})
+    lane_mode_text = (
+        f"ON（wₙ={params.get('lane_weight', lane_weight):.2f}）"
+        if params.get("use_lane_correction", use_lane_correction)
+        else "OFF"
+    )
     st.caption(
         f"実行条件: alpha={params.get('alpha', alpha):.2f}, "
         f"道路長の影響w={params.get('length_weight', length_weight):.2f}, "
+        f"車線数補正={lane_mode_text}, "
         f"計算精度={params.get('calculation_mode', effective_calculation_mode)}"
     )
     st.caption("道路の色は現在の負荷率、黒は初期故障、濃いピンクは現在Stepの故障、半透明の灰色は過去の故障を表します。")
-    max_step = len(result.steps) - 1
 
+    max_step = len(result.steps) - 1
     if max_step <= 0:
         step_index = 0
         st.info("カスケード故障は初期故障のみで終了しました。")
     else:
-        step_index = st.slider(
-            "表示するStep",
-            min_value=0,
-            max_value=max_step,
-            value=0,
-        )
-    step = result.steps[step_index]
+        step_index = st.slider("表示するStep", min_value=0, max_value=max_step, value=0)
 
+    step = result.steps[step_index]
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("このStepの新規故障道路", len(step.failed_edges))
     col2.metric("累積故障道路", len(step.cumulative_failed_edges))
@@ -394,6 +430,7 @@ if result is not None and result_graph is not None:
         f"最大負荷率: {max(finite_ratios, default=0.0):.3f} / "
         f"容量超過道路数: {sum(value > 1.0 for value in step.load_ratios.values())}"
     )
+
     center_lat, center_lon = st.session_state.road_center
     result_radius_m = int(st.session_state.get("road_radius_m", radius_m))
     st.plotly_chart(
@@ -401,7 +438,10 @@ if result is not None and result_graph is not None:
         width="stretch",
     )
 
-    with st.expander("道路ごとの初期負荷・容量・故障Step"):
+    with st.expander("道路ごとの負荷・容量・車線情報・故障Step"):
         st.dataframe(build_edge_table(result_graph, result), width="stretch", hide_index=True)
 
-    st.warning("このモデルは実交通量・車線数・道路幅を直接使用していません。道路長を容量補正の代理指標として利用した簡易モデルです。")
+    st.warning(
+        "このモデルは実交通量、道路幅、信号制御を直接使用していません。"
+        "道路長とOSMの車線数（欠損時はhighwayから推定）を容量補正の代理指標として利用しています。"
+    )
