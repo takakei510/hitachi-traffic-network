@@ -76,17 +76,39 @@ def build_length_adjusted_capacities(
     initial_loads: Mapping[EdgeId, float],
     *,
     alpha: float = 0.2,
+    length_weight: float = 0.5,
 ) -> dict[EdgeId, float]:
-    """Build C_e=(1+alpha)L_e(0)(length_e/mean_length)."""
+    """Build capacities without allowing baseline overloads.
+
+    The previous formula multiplied capacity directly by ``length / mean_length``.
+    Short roads therefore received capacities below their own initial loads and
+    could be overloaded before any attack occurred.  The revised formula keeps
+    ``(1 + alpha) * initial_load`` as the minimum capacity and gives only roads
+    longer than the mean an additional length-based bonus::
+
+        C_e = L_e(0) * (1 + alpha) *
+              (1 + length_weight * max(length_e / mean_length - 1, 0))
+
+    ``length_weight`` controls how strongly road length increases capacity.
+    """
     if alpha < 0.0:
         raise ValueError("alpha must be non-negative")
+    if length_weight < 0.0:
+        raise ValueError("length_weight must be non-negative")
+
     lengths = [_edge_length(data) for _, _, data in graph.edges(data=True)]
     mean_length = mean(lengths) if lengths else 1.0
     capacities: dict[EdgeId, float] = {}
+
     for u, v, data in graph.edges(data=True):
         edge = canonical_edge(graph, u, v)
-        length_factor = _edge_length(data) / mean_length
-        capacities[edge] = float(initial_loads.get(edge, 0.0)) * (1.0 + alpha) * length_factor
+        relative_length = _edge_length(data) / mean_length
+        length_bonus = 1.0 + length_weight * max(relative_length - 1.0, 0.0)
+        capacities[edge] = (
+            float(initial_loads.get(edge, 0.0))
+            * (1.0 + alpha)
+            * length_bonus
+        )
     return capacities
 
 
@@ -116,16 +138,23 @@ def run_road_capacity_cascade(
     *,
     attacked_edges: list[EdgeId],
     alpha: float = 0.2,
+    length_weight: float = 0.5,
     max_steps: int | None = None,
 ) -> RoadCascadeResult:
     """Run an edge-based cascade while preserving the original graph.
 
-    Capacity is based on initial edge betweenness and corrected by relative road length:
-    C_e=(1+alpha)L_e(0)(length_e/mean_length).
+    Capacity is based on initial edge betweenness.  Every road receives at
+    least the base margin ``alpha``; roads longer than the mean receive an
+    additional capacity bonus controlled by ``length_weight``.
     """
     current = graph.copy()
     initial_loads = compute_edge_load(current)
-    capacities = build_length_adjusted_capacities(current, initial_loads, alpha=alpha)
+    capacities = build_length_adjusted_capacities(
+        current,
+        initial_loads,
+        alpha=alpha,
+        length_weight=length_weight,
+    )
 
     attacked: set[EdgeId] = set()
     for u, v in attacked_edges:
