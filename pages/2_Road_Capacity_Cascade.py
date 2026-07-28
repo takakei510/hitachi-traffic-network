@@ -145,13 +145,16 @@ def build_edge_table(graph: nx.Graph, result: RoadCascadeResult) -> pd.DataFrame
     rows = []
     for u, v, data in graph.edges(data=True):
         edge = canonical_edge(graph, u, v)
+        initial_load = result.initial_loads.get(edge, 0.0)
+        capacity = result.capacities.get(edge, 0.0)
         rows.append(
             {
                 "始点": u,
                 "終点": v,
                 "道路長[m]": round(float(data.get("length", 0.0)), 2),
-                "初期負荷": result.initial_loads.get(edge, 0.0),
-                "容量": result.capacities.get(edge, 0.0),
+                "初期負荷": initial_load,
+                "容量": capacity,
+                "初期負荷率": (initial_load / capacity) if capacity > 0 else 0.0,
                 "故障Step": failure_step.get(edge),
             }
         )
@@ -161,13 +164,28 @@ def build_edge_table(graph: nx.Graph, result: RoadCascadeResult) -> pd.DataFrame
 st.set_page_config(page_title="Road Capacity Cascade", layout="wide")
 st.title("道路容量カスケード故障モード")
 st.caption("既存の交差点（ノード）故障モデルとは独立した、道路（エッジ）故障モデルです。")
-st.info("容量は Cₑ=(1+α)Lₑ(0)×(道路長/平均道路長) で定義します。道路長は容量の代理指標です。")
+st.info(
+    "容量は Cₑ=Lₑ(0)(1+α)[1+w·max(道路長/平均道路長−1, 0)] で定義します。"
+    "短い道路でも初期負荷を下回る容量にならず、平均より長い道路だけに追加容量を与えます。"
+)
 
 with st.sidebar:
     st.header("Road Capacity設定")
-    alpha = st.slider("alpha（容量余裕）", 0.0, 1.0, 0.2, 0.05)
+    alpha = st.slider("alpha（基本容量余裕）", 0.0, 1.0, 0.2, 0.05)
+    length_weight = st.slider(
+        "道路長の影響 w",
+        0.0,
+        2.0,
+        0.5,
+        0.1,
+        help="平均道路長を超えた分を、容量へどれだけ強く反映するかを指定します。0では道路長補正なしです。",
+    )
     seed = st.number_input("seed", min_value=0, value=42, step=1)
     attack_mode = st.radio("初期故障道路の選び方", ["高負荷道路", "ランダム道路", "候補から選択"])
+
+st.caption(
+    "alphaを大きくすると全道路が壊れにくくなります。道路長の影響wを大きくすると、平均より長い道路がより壊れにくくなります。"
+)
 
 graph = load_graph()
 query = st.text_input("場所名", value="日立駅")
@@ -205,14 +223,24 @@ if st.button("Road Capacity Cascadeを実行", type="primary"):
             subgraph,
             attacked_edges=[initial_edge],
             alpha=alpha,
+            length_weight=length_weight,
         )
         st.session_state.road_graph = subgraph
         st.session_state.road_center = (selected_place.lat, selected_place.lon)
+        st.session_state.road_parameters = {
+            "alpha": alpha,
+            "length_weight": length_weight,
+        }
 
 result: RoadCascadeResult | None = st.session_state.get("road_result")
 result_graph: nx.Graph | None = st.session_state.get("road_graph")
 if result is not None and result_graph is not None:
     st.subheader("ステップごとの負荷率ヒートマップ")
+    params = st.session_state.get("road_parameters", {})
+    st.caption(
+        f"実行条件: alpha={params.get('alpha', alpha):.2f}, "
+        f"道路長の影響w={params.get('length_weight', length_weight):.2f}"
+    )
     max_step = len(result.steps) - 1
     step_index = st.slider("表示するStep", 0, max_step, 0)
     step = result.steps[step_index]
