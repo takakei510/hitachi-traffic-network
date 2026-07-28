@@ -284,7 +284,7 @@ st.info(
 
 with st.sidebar:
     st.header("Road Capacity設定")
-    alpha = st.slider("alpha（基本容量余裕）", 0.0, 1.0, 0.2, 0.05)
+    alpha = st.slider("alpha（基本容量余裕）", 0.0, 1.0, 0.5, 0.05)
     length_weight = st.slider(
         "道路長の影響 w",
         0.0,
