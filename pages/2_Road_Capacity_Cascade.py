@@ -92,6 +92,18 @@ def choose_attack_edge(
     return edges[0]
 
 
+def _map_zoom(radius_m: int) -> float:
+    if radius_m <= 500:
+        return 14.0
+    if radius_m <= 1000:
+        return 13.2
+    if radius_m <= 2000:
+        return 12.4
+    if radius_m <= 3000:
+        return 11.7
+    return 10.9
+
+
 def _line_trace(
     graph: nx.Graph,
     edges: list[EdgeId],
@@ -127,6 +139,86 @@ def _line_trace(
         hovertemplate="%{customdata}<extra></extra>" if hover else None,
         hoverinfo=None if hover else "skip",
     )
+
+
+def build_attack_selection_map(
+    graph: nx.Graph,
+    center_lat: float,
+    center_lon: float,
+    radius_m: int,
+    selected_edge: EdgeId | None,
+) -> tuple[go.Figure, list[EdgeId]]:
+    """Build a map whose road midpoint markers can be selected by Streamlit."""
+    edges = [canonical_edge(graph, u, v) for u, v in graph.edges()]
+    fig = go.Figure()
+    fig.add_trace(
+        _line_trace(
+            graph,
+            edges,
+            name="選択可能な道路",
+            color="#42a5f5",
+            width=1.5,
+            opacity=0.72,
+            hover=False,
+        )
+    )
+
+    mid_lons: list[float] = []
+    mid_lats: list[float] = []
+    labels: list[str] = []
+    selectable_edges: list[EdgeId] = []
+    for edge in edges:
+        u, v = edge
+        if u not in graph or v not in graph:
+            continue
+        u_data = graph.nodes[u]
+        v_data = graph.nodes[v]
+        mid_lons.append((float(u_data.get("x", 0.0)) + float(v_data.get("x", 0.0))) / 2.0)
+        mid_lats.append((float(u_data.get("y", 0.0)) + float(v_data.get("y", 0.0))) / 2.0)
+        labels.append(edge_label(graph, edge))
+        selectable_edges.append(edge)
+
+    fig.add_trace(
+        go.Scattermapbox(
+            lon=mid_lons,
+            lat=mid_lats,
+            mode="markers",
+            marker=dict(size=12, color="rgba(33,150,243,0.10)"),
+            name="クリック位置",
+            text=labels,
+            customdata=list(range(len(selectable_edges))),
+            hovertemplate="%{text}<br>クリックして初期故障道路に設定<extra></extra>",
+            selected=dict(marker=dict(size=15, color="#111111", opacity=0.9)),
+            unselected=dict(marker=dict(opacity=0.10)),
+            showlegend=False,
+        )
+    )
+
+    if selected_edge is not None and graph.has_edge(*selected_edge):
+        fig.add_trace(
+            _line_trace(
+                graph,
+                [selected_edge],
+                name="選択中の初期故障道路",
+                color="#111111",
+                width=5.0,
+                opacity=1.0,
+            )
+        )
+
+    fig.update_layout(
+        title="初期故障道路を地図から選択",
+        mapbox=dict(
+            style="open-street-map",
+            center=dict(lat=center_lat, lon=center_lon),
+            zoom=_map_zoom(radius_m),
+        ),
+        margin=dict(l=10, r=10, t=55, b=10),
+        height=620,
+        clickmode="event+select",
+        showlegend=False,
+    )
+    return fig, selectable_edges
 
 
 def ratio_category(ratio: float) -> str:
@@ -211,23 +303,12 @@ def build_step_map(
             )
         )
 
-    if radius_m <= 500:
-        zoom = 14.0
-    elif radius_m <= 1000:
-        zoom = 13.2
-    elif radius_m <= 2000:
-        zoom = 12.4
-    elif radius_m <= 3000:
-        zoom = 11.7
-    else:
-        zoom = 10.9
-
     fig.update_layout(
         title=f"Road Capacity Cascade：Step {step_index}",
         mapbox=dict(
             style="open-street-map",
             center=dict(lat=center_lat, lon=center_lon),
-            zoom=zoom,
+            zoom=_map_zoom(radius_m),
         ),
         margin=dict(l=10, r=10, t=60, b=85),
         height=760,
@@ -315,7 +396,10 @@ with st.sidebar:
     )
     sample_size = SAMPLE_OPTIONS[calculation_mode]
     seed = st.number_input("seed", min_value=0, value=42, step=1)
-    attack_mode = st.radio("初期故障道路の選び方", ["高負荷道路", "ランダム道路", "候補から選択"])
+    attack_mode = st.radio(
+        "初期故障道路の選び方",
+        ["高負荷道路", "ランダム道路", "候補から選択", "地図から選択"],
+    )
 
 st.caption(
     "alphaは全道路の基本余裕、道路長の影響wは長い道路への追加容量、"
@@ -358,17 +442,68 @@ if subgraph.number_of_edges() == 0:
     st.warning("この範囲には道路がありません。範囲を広げてください。")
     st.stop()
 
-initial_edge = choose_attack_edge(subgraph, attack_mode, int(seed), effective_sample_size)
+initial_edge: EdgeId | None
 if attack_mode == "候補から選択":
     initial_edge = st.selectbox(
         "初期故障道路",
         [canonical_edge(subgraph, u, v) for u, v in subgraph.edges()],
         format_func=lambda edge: edge_label(subgraph, edge),
     )
+elif attack_mode == "地図から選択":
+    selected_key = (
+        round(float(selected_place.lat), 5),
+        round(float(selected_place.lon), 5),
+        radius_m,
+    )
+    if st.session_state.get("road_attack_selection_scope") != selected_key:
+        st.session_state.road_attack_selection_scope = selected_key
+        st.session_state.pop("road_selected_attack_edge", None)
+
+    selected_edge = st.session_state.get("road_selected_attack_edge")
+    if selected_edge is not None:
+        selected_edge = tuple(selected_edge)
+        if not subgraph.has_edge(*selected_edge):
+            selected_edge = None
+            st.session_state.pop("road_selected_attack_edge", None)
+
+    selection_figure, selectable_edges = build_attack_selection_map(
+        subgraph,
+        selected_place.lat,
+        selected_place.lon,
+        radius_m,
+        selected_edge,
+    )
+    st.caption("道路上の半透明ポイントをクリックしてください。選択した道路は黒線で表示されます。")
+    selection_event = st.plotly_chart(
+        selection_figure,
+        width="stretch",
+        key=f"road_attack_map_{selected_key}",
+        on_select="rerun",
+        selection_mode="points",
+        config={"displayModeBar": True, "scrollZoom": True},
+    )
+    selected_points = selection_event.selection.points
+    if selected_points:
+        point_index = selected_points[0].get("point_index")
+        if point_index is not None and 0 <= int(point_index) < len(selectable_edges):
+            clicked_edge = selectable_edges[int(point_index)]
+            if clicked_edge != selected_edge:
+                st.session_state.road_selected_attack_edge = clicked_edge
+                st.rerun()
+
+    initial_edge = st.session_state.get("road_selected_attack_edge")
+    if initial_edge is None:
+        st.info("地図上から初期故障道路を1本選択してください。")
+    else:
+        initial_edge = tuple(initial_edge)
+        st.success(f"選択中: {edge_label(subgraph, initial_edge)}")
 else:
+    initial_edge = choose_attack_edge(subgraph, attack_mode, int(seed), effective_sample_size)
     st.write(f"初期故障道路: **{edge_label(subgraph, initial_edge)}**")
 
-if st.button("Road Capacity Cascadeを実行", type="primary"):
+run_disabled = initial_edge is None
+if st.button("Road Capacity Cascadeを実行", type="primary", disabled=run_disabled):
+    assert initial_edge is not None
     with st.spinner("エッジ媒介中心性とカスケード故障を計算しています..."):
         st.session_state.road_result = run_road_capacity_cascade(
             subgraph,
@@ -391,6 +526,7 @@ if st.button("Road Capacity Cascadeを実行", type="primary"):
             "calculation_mode": effective_calculation_mode,
             "sample_size": effective_sample_size,
             "seed": int(seed),
+            "attack_mode": attack_mode,
         }
 
 result: RoadCascadeResult | None = st.session_state.get("road_result")
