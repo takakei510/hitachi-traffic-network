@@ -242,7 +242,17 @@ if result is not None and result_graph is not None:
         f"道路長の影響w={params.get('length_weight', length_weight):.2f}"
     )
     max_step = len(result.steps) - 1
-    step_index = st.slider("表示するStep", 0, max_step, 0)
+
+    if max_step <= 0:
+        step_index = 0
+        st.info("カスケード故障は初期故障のみで終了しました。")
+    else:
+        step_index = st.slider(
+            "表示するStep",
+            min_value=0,
+            max_value=max_step,
+            value=0,
+        )
     step = result.steps[step_index]
 
     col1, col2, col3, col4 = st.columns(4)
