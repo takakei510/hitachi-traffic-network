@@ -27,7 +27,13 @@ from hitachi_network.road_cascade import (
 from hitachi_network.simulation import project_road_graph
 
 
-RADIUS_OPTIONS = {"500 m": 500, "1 km": 1000, "2 km": 2000, "3 km": 3000}
+RADIUS_OPTIONS = {
+    "500 m": 500,
+    "1 km": 1000,
+    "2 km": 2000,
+    "3 km": 3000,
+    "5 km": 5000,
+}
 SAMPLE_OPTIONS = {
     "高速（32ノード）": 32,
     "標準（64ノード）": 64,
@@ -152,7 +158,7 @@ def build_step_map(
     fig = go.Figure()
     for key, label, color, _lower, _upper in RATIO_BINS:
         if groups[key]:
-            width = 2.8 if key in {"critical", "over"} else 1.8
+            width = 2.0 if key in {"critical", "over"} else 1.25
             fig.add_trace(
                 _line_trace(
                     graph,
@@ -160,7 +166,7 @@ def build_step_map(
                     name=label,
                     color=color,
                     width=width,
-                    opacity=0.90,
+                    opacity=0.88,
                 )
             )
 
@@ -171,8 +177,8 @@ def build_step_map(
                 sorted(previous_failed, key=repr),
                 name="過去の故障道路",
                 color="#616161",
-                width=3.0,
-                opacity=0.42,
+                width=1.8,
+                opacity=0.28,
             )
         )
     if current_failed:
@@ -182,8 +188,8 @@ def build_step_map(
                 sorted(current_failed, key=repr),
                 name="このステップで故障",
                 color="#c2185b",
-                width=5.0,
-                opacity=1.0,
+                width=3.2,
+                opacity=0.95,
             )
         )
     if initial_failed:
@@ -193,12 +199,22 @@ def build_step_map(
                 sorted(initial_failed, key=repr),
                 name="初期故障道路",
                 color="#111111",
-                width=6.0,
+                width=4.0,
                 opacity=1.0,
             )
         )
 
-    zoom = 14.0 if radius_m <= 500 else 13.2 if radius_m <= 1000 else 12.4 if radius_m <= 2000 else 11.7
+    if radius_m <= 500:
+        zoom = 14.0
+    elif radius_m <= 1000:
+        zoom = 13.2
+    elif radius_m <= 2000:
+        zoom = 12.4
+    elif radius_m <= 3000:
+        zoom = 11.7
+    else:
+        zoom = 10.9
+
     fig.update_layout(
         title=f"Road Capacity Cascade：Step {step_index}",
         mapbox=dict(
@@ -267,7 +283,7 @@ with st.sidebar:
         "媒介中心性の計算精度",
         list(SAMPLE_OPTIONS),
         index=1,
-        help="3 kmでは高速または標準を推奨します。厳密計算はノード数が多いと非常に時間がかかります。",
+        help="3 km以上では高速または標準を推奨します。5 kmでは最大64ノードに自動制限します。",
     )
     sample_size = SAMPLE_OPTIONS[calculation_mode]
     seed = st.number_input("seed", min_value=0, value=42, step=1)
@@ -293,13 +309,25 @@ radius_m = RADIUS_OPTIONS[radius_label]
 subgraph = project_road_graph(extract_radius_subgraph(graph, selected_place.lat, selected_place.lon, radius_m))
 
 st.write(f"対象ノード数: **{subgraph.number_of_nodes()}** / 対象道路数: **{subgraph.number_of_edges()}**")
-if radius_m >= 3000 and sample_size is None:
-    st.warning("3 kmで厳密計算を選ぶと、環境によっては数分以上かかる場合があります。高速または標準を推奨します。")
+
+effective_sample_size = sample_size
+effective_calculation_mode = calculation_mode
+if radius_m >= 5000 and (sample_size is None or sample_size > 64):
+    effective_sample_size = 64
+    effective_calculation_mode = "標準（64ノード・5 km自動制限）"
+    st.warning(
+        "5 kmでは処理時間とメモリ使用量を抑えるため、媒介中心性計算を64サンプルへ自動制限します。"
+    )
+elif radius_m >= 3000 and sample_size is None:
+    st.warning(
+        "3 kmで厳密計算を選ぶと、環境によっては数分以上かかる場合があります。高速または標準を推奨します。"
+    )
+
 if subgraph.number_of_edges() == 0:
     st.warning("この範囲には道路がありません。範囲を広げてください。")
     st.stop()
 
-initial_edge = choose_attack_edge(subgraph, attack_mode, int(seed), sample_size)
+initial_edge = choose_attack_edge(subgraph, attack_mode, int(seed), effective_sample_size)
 if attack_mode == "候補から選択":
     initial_edge = st.selectbox(
         "初期故障道路",
@@ -316,7 +344,7 @@ if st.button("Road Capacity Cascadeを実行", type="primary"):
             attacked_edges=[initial_edge],
             alpha=alpha,
             length_weight=length_weight,
-            sample_size=sample_size,
+            sample_size=effective_sample_size,
             seed=int(seed),
         )
         st.session_state.road_graph = subgraph
@@ -325,8 +353,8 @@ if st.button("Road Capacity Cascadeを実行", type="primary"):
         st.session_state.road_parameters = {
             "alpha": alpha,
             "length_weight": length_weight,
-            "calculation_mode": calculation_mode,
-            "sample_size": sample_size,
+            "calculation_mode": effective_calculation_mode,
+            "sample_size": effective_sample_size,
             "seed": int(seed),
         }
 
@@ -338,7 +366,7 @@ if result is not None and result_graph is not None:
     st.caption(
         f"実行条件: alpha={params.get('alpha', alpha):.2f}, "
         f"道路長の影響w={params.get('length_weight', length_weight):.2f}, "
-        f"計算精度={params.get('calculation_mode', calculation_mode)}"
+        f"計算精度={params.get('calculation_mode', effective_calculation_mode)}"
     )
     st.caption("道路の色は現在の負荷率、黒は初期故障、濃いピンクは現在Stepの故障、半透明の灰色は過去の故障を表します。")
     max_step = len(result.steps) - 1
