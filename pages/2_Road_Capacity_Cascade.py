@@ -46,7 +46,7 @@ RATIO_BINS = [
     ("safe", "余裕あり（0.0–0.4）", "#90caf9", 0.0, 0.4),
     ("moderate", "比較的安全（0.4–0.7）", "#4dd0e1", 0.4, 0.7),
     ("high", "負荷上昇（0.7–0.9）", "#fdd835", 0.7, 0.9),
-    ("critical", "故障寸前（0.9–1.0）", "#fb8c00", 0.9, 1.0),
+    ("critical", "限界寸前（0.9–1.0）", "#fb8c00", 0.9, 1.0),
     ("over", "容量超過（1.0超）", "#e53935", 1.0, float("inf")),
 ]
 
@@ -187,7 +187,7 @@ def build_attack_selection_map(
             name="クリック位置",
             text=labels,
             customdata=list(range(len(selectable_edges))),
-            hovertemplate="%{text}<br>クリックして初期故障道路に設定<extra></extra>",
+            hovertemplate="%{text}<br>クリックして最初に利用できない道路に設定<extra></extra>",
             selected=dict(marker=dict(size=15, color="#111111", opacity=0.9)),
             unselected=dict(marker=dict(opacity=0.10)),
             showlegend=False,
@@ -199,7 +199,7 @@ def build_attack_selection_map(
             _line_trace(
                 graph,
                 [selected_edge],
-                name="選択中の初期故障道路",
+                name="最初に利用できない道路",
                 color="#111111",
                 width=5.0,
                 opacity=1.0,
@@ -207,7 +207,7 @@ def build_attack_selection_map(
         )
 
     fig.update_layout(
-        title="初期故障道路を地図から選択",
+        title="最初に利用できない道路を地図から選択",
         mapbox=dict(
             style="open-street-map",
             center=dict(lat=center_lat, lon=center_lon),
@@ -274,7 +274,7 @@ def build_step_map(
             _line_trace(
                 graph,
                 sorted(previous_failed, key=repr),
-                name="過去の故障道路",
+                name="過去に利用できなくなった道路",
                 color="#616161",
                 width=1.8,
                 opacity=0.28,
@@ -285,7 +285,7 @@ def build_step_map(
             _line_trace(
                 graph,
                 sorted(current_failed, key=repr),
-                name="このステップで故障",
+                name="このステップで利用できなくなった道路",
                 color="#c2185b",
                 width=3.2,
                 opacity=0.95,
@@ -296,7 +296,7 @@ def build_step_map(
             _line_trace(
                 graph,
                 sorted(initial_failed, key=repr),
-                name="初期故障道路",
+                name="最初に利用できない道路",
                 color="#111111",
                 width=4.0,
                 opacity=1.0,
@@ -349,7 +349,7 @@ def build_edge_table(graph: nx.Graph, result: RoadCascadeResult) -> pd.DataFrame
                 "初期負荷": initial_load,
                 "容量": capacity,
                 "初期負荷率": (initial_load / capacity) if capacity > 0 else 0.0,
-                "故障Step": failure_step.get(edge),
+                "利用不可になったStep": failure_step.get(edge),
             }
         )
     return pd.DataFrame(rows)
@@ -357,7 +357,7 @@ def build_edge_table(graph: nx.Graph, result: RoadCascadeResult) -> pd.DataFrame
 
 st.set_page_config(page_title="Road Capacity Cascade", layout="wide")
 st.title("道路容量カスケード故障モード")
-st.caption("既存の交差点（ノード）故障モデルとは独立した、道路（エッジ）故障モデルです。")
+st.caption("既存の交差点（ノード）故障モデルとは独立した、道路（エッジ）を対象とするモデルです。")
 st.info(
     "容量は Cₑ=Lₑ(0)(1+α)×道路長補正×車線数補正 で定義します。"
     "車線数が欠損している場合は highway 属性から保守的に推定します。"
@@ -413,7 +413,7 @@ with st.sidebar:
     sample_size = SAMPLE_OPTIONS[calculation_mode]
     seed = st.number_input("seed", min_value=0, value=42, step=1)
     attack_mode = st.radio(
-        "初期故障道路の選び方",
+        "最初に利用できない道路の選び方",
         ["高負荷道路", "ランダム道路", "候補から選択", "地図から選択"],
     )
 
@@ -462,7 +462,7 @@ if subgraph.number_of_edges() == 0:
 initial_edge: EdgeId | None
 if attack_mode == "候補から選択":
     initial_edge = st.selectbox(
-        "初期故障道路",
+        "最初に利用できない道路",
         [canonical_edge(subgraph, u, v) for u, v in subgraph.edges()],
         format_func=lambda edge: edge_label(subgraph, edge),
     )
@@ -510,18 +510,18 @@ elif attack_mode == "地図から選択":
 
     initial_edge = st.session_state.get("road_selected_attack_edge")
     if initial_edge is None:
-        st.info("地図上から初期故障道路を1本選択してください。")
+        st.info("地図上から最初に利用できない道路を1本選択してください。")
     else:
         initial_edge = tuple(initial_edge)
         st.success(f"選択中: {edge_label(subgraph, initial_edge)}")
 else:
     initial_edge = choose_attack_edge(subgraph, attack_mode, int(seed), effective_sample_size)
-    st.write(f"初期故障道路: **{edge_label(subgraph, initial_edge)}**")
+    st.write(f"最初に利用できない道路: **{edge_label(subgraph, initial_edge)}**")
 
 run_disabled = initial_edge is None
 if st.button("Road Capacity Cascadeを実行", type="primary", disabled=run_disabled):
     assert initial_edge is not None
-    with st.spinner("エッジ媒介中心性とカスケード故障を計算しています..."):
+    with st.spinner("道路の負荷と影響の広がりを計算しています..."):
         st.session_state.road_result = run_road_capacity_cascade(
             subgraph,
             attacked_edges=[initial_edge],
@@ -549,7 +549,7 @@ if st.button("Road Capacity Cascadeを実行", type="primary", disabled=run_disa
 result: RoadCascadeResult | None = st.session_state.get("road_result")
 result_graph: nx.Graph | None = st.session_state.get("road_graph")
 if result is not None and result_graph is not None:
-    st.subheader("ステップごとの負荷率ヒートマップ")
+    st.subheader("ステップごとの道路の状態")
     params = st.session_state.get("road_parameters", {})
     lane_mode_text = (
         f"ON（wₙ={params.get('lane_weight', lane_weight):.2f}）"
@@ -562,20 +562,20 @@ if result is not None and result_graph is not None:
         f"車線数補正={lane_mode_text}, "
         f"計算精度={params.get('calculation_mode', effective_calculation_mode)}"
     )
-    st.caption("道路の色は現在の負荷率、黒は初期故障、濃いピンクは現在Stepの故障、半透明の灰色は過去の故障を表します。")
+    st.caption("道路の色は現在の負荷率、黒は最初に利用できない道路、濃いピンクはこのStepで利用できなくなった道路、半透明の灰色は過去に利用できなくなった道路を表します。")
 
     max_step = len(result.steps) - 1
     if max_step <= 0:
         step_index = 0
-        st.info("カスケード故障は初期故障のみで終了しました。")
+        st.info("影響は最初に選んだ道路だけで止まりました。")
     else:
         step_index = st.slider("表示するStep", min_value=0, max_value=max_step, value=0)
 
     step = result.steps[step_index]
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("このStepの新規故障道路", len(step.failed_edges))
-    col2.metric("累積故障道路", len(step.cumulative_failed_edges))
-    col3.metric("残存道路", step.remaining_edges)
+    col1.metric("このStepで利用できなくなった道路", len(step.failed_edges))
+    col2.metric("累積で利用できない道路", len(step.cumulative_failed_edges))
+    col3.metric("利用可能な道路", step.remaining_edges)
     col4.metric("最大連結成分ノード数", step.largest_component_size)
 
     finite_ratios = [value for value in step.load_ratios.values() if value != float("inf")]
@@ -591,7 +591,7 @@ if result is not None and result_graph is not None:
         width="stretch",
     )
 
-    with st.expander("道路ごとの負荷・容量・車線情報・故障Step"):
+    with st.expander("道路ごとの負荷・容量・車線情報・利用不可になったStep"):
         st.dataframe(build_edge_table(result_graph, result), width="stretch", hide_index=True)
 
     st.warning(
