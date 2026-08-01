@@ -77,7 +77,7 @@ def parse_lane_count(value: object) -> float | None:
     """Parse OSM ``lanes`` values.
 
     Multiple numeric values such as ``"3,2"`` are interpreted as directional
-    lane counts and summed, so ``"3,2"`` becomes five total lanes.  Lists and
+    lane counts and summed, so ``"3,2"`` becomes five total lanes. Lists and
     other common separators are also accepted.
     """
     if _is_missing(value):
@@ -283,11 +283,19 @@ def run_road_capacity_cascade(
     length_weight: float = 0.5,
     lane_weight: float = 0.5,
     use_lane_correction: bool = True,
+    overload_threshold: float = 1.2,
     sample_size: int | None = None,
     seed: int | None = 42,
     max_steps: int | None = None,
 ) -> RoadCascadeResult:
-    """Run an edge-based cascade while preserving the original graph."""
+    """Run an edge-based cascade while preserving the original graph.
+
+    An active road becomes unavailable only when its load ratio is greater than
+    ``overload_threshold``. For example, 1.2 allows a temporary 20% excess.
+    """
+    if overload_threshold < 1.0:
+        raise ValueError("overload_threshold must be at least 1.0")
+
     current = graph.copy()
     initial_loads = compute_edge_load(current, sample_size=sample_size, seed=seed)
     capacities = build_length_adjusted_capacities(
@@ -331,7 +339,9 @@ def run_road_capacity_cascade(
             break
         loads = compute_edge_load(current, sample_size=sample_size, seed=seed)
         ratios = _load_ratios(current, loads, capacities)
-        overloaded = {edge for edge, ratio in ratios.items() if ratio > 1.0}
+        overloaded = {
+            edge for edge, ratio in ratios.items() if ratio > overload_threshold
+        }
         if not overloaded:
             break
 
