@@ -143,7 +143,7 @@ if st.button("GIFを生成", type="primary"):
         except Exception as exc:
             st.error(f"GIFの生成に失敗しました: {exc}")
 
- gif_bytes = st.session_state.get("road_cascade_gif")
+gif_bytes = st.session_state.get("road_cascade_gif")
 if gif_bytes:
     st.subheader("自動再生")
     st.image(gif_bytes, width="stretch")
